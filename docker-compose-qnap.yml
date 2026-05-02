@@ -1,0 +1,51 @@
+services:
+  sensorpush-google-home:
+    build: .
+    container_name: sensorpush-google-home
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - SENSORPUSH_EMAIL=${SENSORPUSH_EMAIL}
+      - SENSORPUSH_PASSWORD=${SENSORPUSH_PASSWORD}
+      - OAUTH_CLIENT_ID=${OAUTH_CLIENT_ID:-sensorpush-google-home}
+      - OAUTH_CLIENT_SECRET=${OAUTH_CLIENT_SECRET}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/ping"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  cloudflare-ddns:
+    image: favonia/cloudflare-ddns:latest
+    container_name: cloudflare-ddns
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - CF_API_TOKEN=${CF_API_TOKEN}
+      - DOMAINS=sensorpush.dogpose.com
+      - PROXIED=true
+      - IP6_PROVIDER=none
+    cap_drop:
+      - ALL
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+
+  cloudflare-ddns-vpn:
+    image: favonia/cloudflare-ddns:latest
+    container_name: cloudflare-ddns-vpn
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - CF_API_TOKEN=${CF_API_TOKEN}
+      - DOMAINS=vpn.dogpose.com
+      - PROXIED=false
+      - IP6_PROVIDER=none
+    cap_drop:
+      - ALL
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
