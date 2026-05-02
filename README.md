@@ -1,6 +1,8 @@
-# SensorPush → Google Home
+# SensorPushIntegration
 
-A small Node/Express service that bridges [SensorPush](https://www.sensorpush.com/) temperature/humidity sensors to Google Home as Cloud-to-cloud Smart Home devices, so you can ask:
+Idiosyncratic integration platform to connect SensorPush Gateway content to home automation.
+
+The first integration here is a **Google Home** bridge: a small Node/Express service that exposes [SensorPush](https://www.sensorpush.com/) temperature/humidity sensors as Google Smart Home (Cloud-to-cloud) devices, so you can ask:
 
 > "Hey Google, what's the temperature in the Office?"
 > "Hey Google, what's the humidity in the Guitar Room?"
