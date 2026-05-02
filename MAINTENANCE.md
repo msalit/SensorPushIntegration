@@ -307,17 +307,18 @@ docker compose -f docker-compose-qnap.yml up -d --force-recreate sensorpush-goog
 ### Local (Mac)
 
 ```
-/Users/msalit/sensorpush-google-home/
+/Users/msalit/SensorPushIntegration/        # also: github.com/msalit/SensorPushIntegration
 ├── src/
 │   ├── index.js          # Main server code
 │   └── sensorpush.js     # SensorPush API client
-├── docker-compose.yml     # Original compose file
-├── docker-compose-qnap.yml # QNAP-specific compose
+├── docs/                 # design docs (e.g. apple-home-integration-plan.md)
+├── docker-compose.yml         # Generic compose (env interpolation)
+├── docker-compose-qnap.yml    # QNAP-specific compose
 ├── Dockerfile
 ├── package.json
-├── .env
-├── logo.png              # Google Home app icon
-├── README.md             # Original readme
+├── .env                  # gitignored, real secrets
+├── .env.example          # template
+├── README.md
 └── MAINTENANCE.md        # This file
 ```
 
@@ -333,19 +334,28 @@ Accessible via SMB at: `/Volumes/mountPoint/Container/sensorpush-google-home/`
 
 ## Updating the Code
 
-1. Edit files locally in `/Users/msalit/sensorpush-google-home/src/`
+The repo is the source of truth. Edit, commit, push, then pull on the NAS.
 
-2. Copy to NAS:
+1. Edit files locally in `~/SensorPushIntegration/`, run tests if any, commit:
    ```bash
-   cp ~/sensorpush-google-home/src/* /Volumes/mountPoint/Container/sensorpush-google-home/src/
+   cd ~/SensorPushIntegration
+   git add -A && git commit -m "..." && git push
    ```
 
-3. Restart container:
+2. On the NAS, pull and rebuild:
    ```bash
-   ssh msalit@dewberrynas.lan "export PATH=/share/CACHEDEV1_DATA/.qpkg/container-station/bin:\$PATH && docker restart sensorpush-google-home"
+   ssh msalit@dewberrynas.lan
+   export PATH=/share/CACHEDEV1_DATA/.qpkg/container-station/bin:$PATH
+   cd /share/mountPoint/Container/sensorpush-google-home   # post-rename: /share/dewberryMount/Container/sensorpush-google-home
+   git pull
+   docker compose -f docker-compose-qnap.yml up -d --build
    ```
 
-4. If traits changed, resync: "Hey Google, sync my devices"
+3. Verify: `curl https://sensorpush.dogpose.com/health`
+
+4. If Google Smart Home device traits changed, resync: "Hey Google, sync my devices"
+
+> Note: as of 2026-05-02 the NAS copy is not yet a git clone of the repo — it's still the standalone copy that predates the repo. Converting it to a git checkout is a separate, pending step (along with migrating the live `docker-compose-qnap.yml` to env-interpolation).
 
 ---
 
