@@ -194,10 +194,12 @@ rsync -av --delete \
   Dockerfile package.json package-lock.json src \
   truenas:/mnt/tank/appdata/sensorpush/build/
 
-# 3. Rebuild + redeploy on the box
+# 3. Rebuild + redeploy on the box, with the HomeOps watchdog paused (else a false alert email)
 ssh truenas
+sudo docker exec homeops-runner touch /data/state/maintenance
 sudo docker build -t sensorpush-google-home:local /mnt/tank/appdata/sensorpush/build
 midclt call app.redeploy sensorpush
+sudo docker exec homeops-runner rm -f /data/state/maintenance   # once /sensors answers 200
 
 # 4. Verify (on the box — from outside, /health is behind Cloudflare Access)
 curl -s http://127.0.0.1:3000/health
@@ -484,7 +486,7 @@ Findings measured from the public internet on 2026-10-26, and their status:
 | 4 | `/fulfillment` never checked the bearer token | 401 unless an unexpired issued access token; DISCONNECT revokes all | **Fixed 2026-10-26** |
 | 5 | OAuth client secret printed to the log at startup; auth codes and (via actions-on-google `debug: true`) bearer tokens logged too; secret silently randomized if env unset | Removed; fail fast on missing env | **Fixed 2026-10-26.** Old log lines remain in the pre-fix container's history; consider rotating `OAUTH_CLIENT_SECRET` (requires updating the Google console). |
 | 6 | Tokens held in memory: a restart invalidated Google's tokens (seen 2026-10-03: refresh failed after restart, re-link needed) | Persist SHA-256 hashes to `/mnt/tank/appdata/sensorpush/data/tokens.json` | **Fixed 2026-10-26** |
-| 7 | `cloudflared` image is `:latest` (unpinned) | Pin a version | Open (low) |
+| 7 | `cloudflared` image was `:latest` (unpinned) | Pinned to `cloudflare/cloudflared:2026.10.3` in `~/compose/cloudflared.yml` on tank (mirror: HomeOps `compose/cloudflared.yml`) | **Fixed 2026-10-26** |
 
 Tests: `npm test` (node:test, starts the server with dummy credentials; covers the above).
 
