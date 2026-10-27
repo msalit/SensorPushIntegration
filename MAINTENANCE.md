@@ -1,4 +1,8 @@
-# SensorPush to Google Home Connector - Maintenance Guide
+# SensorPush to Google Home Connector — Maintenance Guide
+
+**Last verified: 2026-08-13** (app `RUNNING` on tankNAS, 16 sensors, `tokenValid: true`)
+**Updated 2026-10-26:** Cloudflare Tunnel architecture, Homebridge/Apple Home, security status. tankNAS
+IP, TrueNAS version, app state and container states re-checked on the box that day.
 
 ## Overview
 
@@ -8,28 +12,49 @@ This service connects your SensorPush temperature/humidity sensors to Google Hom
 
 ---
 
+## ⚠️ Where this runs (changed 2026-07-03)
+
+The connector **moved off the QNAP DewberryNAS onto tankNAS (TrueNAS SCALE)** on 2026-07-03 as part
+of the NAS migration program. DewberryNAS's `sensorpush` and `cloudflare-ddns` containers are
+**stopped** and that deployment is retired.
+
+| | Old (retired) | Current |
+|---|---|---|
+| Host | DewberryNAS (QNAP TS-233) | **tankNAS** (UGREEN DXP4800, TrueNAS CE 25.10.7) |
+| IP | 192.168.1.4 | **192.168.186.156** (Oakland LAN; was 192.168.1.170 in McLean) |
+| Deploy model | `docker compose -f docker-compose-qnap.yml` | **TrueNAS custom app** named `sensorpush` |
+| Code location | `/share/mountPoint/Container/sensorpush-google-home/` | **`/mnt/tank/appdata/sensorpush/build/`** |
+| Secrets | that dir's `.env` | **`/mnt/tank/appdata/sensorpush/.env`** (mode 600) |
+| Compose source of truth | `docker-compose-qnap.yml` (this repo) | **`~/AI_Projects/NAS Migration/compose/sensorpush.yml`** |
+
+`docker-compose-qnap.yml` in this repo is kept for reference only. Do not deploy from it.
+
+---
+
 ## Architecture
 
 ```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│  Google Home    │────▶│   Cloudflare    │────▶│  DewberryNAS    │
-│  (Voice Query)  │     │   (Proxy/SSL)   │     │  (Docker)       │
-└─────────────────┘     └─────────────────┘     └─────────────────┘
-                                                        │
-                                                        ▼
-                                                ┌─────────────────┐
-                                                │  SensorPush API │
-                                                │  (Cloud)        │
-                                                └─────────────────┘
+SensorPush cloud ──► sensorpush-google-home ──► cloudflared (tunnel) ──► Cloudflare ──► Google Home
+       │              (TrueNAS app, :3000)        (outbound-only)
+       │
+       └───────────► homebridge (homebridge-sensorpush, LAN only) ──► Apple Home (HomePods / Apple TV)
 ```
 
-**Flow:**
+**Google flow (since 2026-09-29):**
 1. User speaks to Google Home
 2. Google sends request to `https://sensorpush.dogpose.com/fulfillment`
-3. Cloudflare terminates SSL and proxies to your home IP on port 80
-4. Firewalla forwards port 80 → DewberryNAS:3000
-5. Container fetches readings from SensorPush API
+3. Cloudflare terminates TLS and sends the request down the **Cloudflare Tunnel**, which `cloudflared`
+   on tankNAS holds open outbound — nothing listens on the WAN
+4. `cloudflared` forwards to `http://sensorpush-google-home:3000` over the Docker network
+   `ix-sensorpush_default`
+5. Container fetches readings from the SensorPush API
 6. Response returns through the chain to Google Home
+
+The tunnel's public hostname is configured in the Cloudflare dashboard (Zero Trust → Networks →
+Tunnels → "tank" → Public Hostname). The old path (WAN:80 → Firewalla port-forward → tank:3000,
+kept current by `cloudflare-ddns`) is retired.
+
+**Apple flow:** independent of this service — see "Apple Home (Homebridge)" below.
 
 ---
 
@@ -49,8 +74,10 @@ This service connects your SensorPush temperature/humidity sensors to Google Hom
 
 | Setting | Value |
 |---------|-------|
-| SSL Mode | Flexible |
-| Proxy Status | Proxied (orange cloud) |
+| Public hostname | Cloudflare Tunnel "tank" → `http://sensorpush-google-home:3000` (DNS record is a tunnel CNAME, managed by Cloudflare) |
+| Tunnel token | `TUNNEL_TOKEN` in `/mnt/tank/appdata/sensorpush/.env`; value in private Bear note |
+| Cloudflare Access | **Planned (Phase 0, 2026-10-26):** Access app on `/sensors`, `/health`, `/ping` only. `/auth`, `/token`, `/fulfillment` must stay public for Google. |
+| SSL Mode / Proxy | Legacy settings from the port-forward era (Flexible, proxied); not used by the tunnel path |
 | Account Email | _see private Bear note_ |
 | Zone ID | _see private Bear note_ |
 | Account ID | _see private Bear note_ |
@@ -58,18 +85,24 @@ This service connects your SensorPush temperature/humidity sensors to Google Hom
 
 ### Network
 
+> **These values change when the household moves.** See "Relocation bring-up" below.
+
 | Item | Value |
 |------|-------|
-| Home Public IP | Dynamic (currently `108.48.81.55`) |
+| Home Public IP | Dynamic — irrelevant to the Google path since the tunnel (2026-09-29) |
 | Router | Firewalla Purple |
-| Port Forward | TCP 80 → 192.168.1.4:3000 |
-| NAS | DewberryNAS (`dewberrynas.lan` / `192.168.1.4`) |
+| Port Forward | **None needed.** Retired with the move to Cloudflare Tunnel (2026-09-29) |
+| NAS | tankNAS (`192.168.186.156`) |
+| SensorPush gateways | 2 units; each supports WiFi **and** wired RJ-45 |
 
 ---
 
 ## Credentials
 
-> **Where credentials live:** Real values are kept in two places only — the `.env` file on the host running Docker, and a private Bear note (*"SensorPush to Google Home Connector - Maintenance Guide"*). They are NOT in this repo. The tables below name what's needed; copy `.env.example` to `.env` and fill in.
+> **Where credentials live:** Real values are kept in two places only — `/mnt/tank/appdata/sensorpush/.env`
+> on tankNAS (mode 600), and a private Bear note (*"SensorPush to Google Home Connector - Maintenance
+> Guide"*). They are NOT in this repo, and NOT in the NAS Migration repo — `compose/sensorpush.yml`
+> uses `${...}` placeholders that are interpolated at deploy time.
 
 ### SensorPush API
 
@@ -98,207 +131,259 @@ This service connects your SensorPush temperature/humidity sensors to Google Hom
 
 ---
 
-## Docker Deployment
+## Deployment on tankNAS
 
-### Location on NAS
+### Access
+
+```bash
+ssh truenas          # alias in ~/.ssh/config → 192.168.186.156
+```
+
+The SSH key `~/.ssh/id_ed25519_nas` is **passphrase-protected**, with the passphrase in the Apple
+Keychain. `~/.ssh/config` has `UseKeychain yes` + `AddKeysToAgent yes` on the `truenas` block, so a
+cold Mac reboot no longer breaks access. (Historic failure mode: an empty agent surfaced as a
+confusing "Permission denied (publickey)".)
+
+- `msalit` is FULL_ADMIN. **`sudo` requires a password** — it's in Keychain item `nas-truenas`.
+- `midclt` (middleware CLI) runs as root over SSH **without** sudo — prefer it.
+- The `docker` CLI **does** need sudo (`sudo docker ps`).
+- **Do not use the TrueNAS REST API.** It's deprecated (removed in 26.04) and raises a
+  `RESTAPIUsage` alert email on every call. Use `midclt` over SSH, or the WebSocket JSON-RPC API
+  (`wss://192.168.186.156/api/current`).
+
+### File layout on the box
 
 ```
-/share/mountPoint/Container/sensorpush-google-home/
-├── docker-compose-qnap.yml
-├── src/
-│   ├── index.js
-│   └── sensorpush.js
-├── package.json
-├── package-lock.json
-├── Dockerfile
-└── .env
+/mnt/tank/appdata/sensorpush/
+├── .env                  # mode 600 — all secrets
+└── build/                # Docker build context — a COPY of this repo, not a git clone
+    ├── Dockerfile
+    ├── package.json
+    ├── package-lock.json
+    └── src/
 ```
 
 ### Containers
 
 | Container | Image | Purpose |
 |-----------|-------|---------|
-| `sensorpush-google-home` | `node:20-alpine` | Main server |
-| `cloudflare-ddns` | `favonia/cloudflare-ddns` | Updates DNS when IP changes |
+| `sensorpush-google-home` | `sensorpush-google-home:local` (built on-box) | Main server, port 3000 |
+| `cloudflare-ddns` | `favonia/cloudflare-ddns` | **Redundant** since the tunnel owns the DNS record. Exited as of 2026-10-26, but still defined in `sensorpush.yml` with `restart: unless-stopped` — an `app.redeploy` may start it again. Remove it from the compose once Cloudflare Access is verified. |
+| `cloudflare-ddns-vpn` | `favonia/cloudflare-ddns` | Keeps `vpn.dogpose.com` → WAN IP (DNS-only, WireGuard). **Keep.** |
 
-### Docker Compose File
+Not part of the `sensorpush` app, but on the request path:
 
-File: `/share/mountPoint/Container/sensorpush-google-home/docker-compose-qnap.yml`
+| Container | How it runs | Notes |
+|-----------|-------------|-------|
+| `cloudflared` | Plain `docker compose` project (`~/compose/cloudflared.yml` on the box), joined to the external network `ix-sensorpush_default` | `TUNNEL_TOKEN` is interpolated from `/mnt/tank/appdata/sensorpush/.env`. Running `docker compose` **without** `--env-file /mnt/tank/appdata/sensorpush/.env` leaves the token empty and crash-loops the tunnel (happened 2026-10-26). |
 
-See the canonical `docker-compose-qnap.yml` in this repo. All secrets are read from the `.env` file in the same directory via `${VAR}` interpolation; the compose file itself contains no credentials.
+The main image uses `pull_policy: never` — it is built locally and must never be pulled from a registry.
 
-> **Note:** This file used to describe an older deployment that volume-mounted `src/` and ran `npm install` on every start with the raw `node:20-alpine` image. The current setup uses `build: .` with the `Dockerfile`. After code changes you must rebuild: `docker compose -f docker-compose-qnap.yml up -d --build`.
+### Deploying a code change
+
+```bash
+# 1. On the Mac: commit and push
+cd ~/SensorPushIntegration
+git add -A && git commit -m "..." && git push
+
+# 2. Push the build context up
+rsync -av --delete \
+  Dockerfile package.json package-lock.json src \
+  truenas:/mnt/tank/appdata/sensorpush/build/
+
+# 3. Rebuild + redeploy on the box
+ssh truenas
+sudo docker build -t sensorpush-google-home:local /mnt/tank/appdata/sensorpush/build
+midclt call app.redeploy sensorpush
+
+# 4. Verify (on the box — from outside, /health is behind Cloudflare Access)
+curl -s http://127.0.0.1:3000/health
+```
+
+Use `midclt`, **not** `docker compose -f sensorpush.yml up -d`, for the `sensorpush` app — plain
+compose would create a second, unmanaged project next to the TrueNAS app.
+
+### Changing the container definition (ports, env, volumes)
+
+Edit `~/AI_Projects/NAS Migration/compose/sensorpush.yml`, then apply it as the custom app's
+compose string:
+
+```bash
+midclt call app.update sensorpush '{"custom_compose_config_string": "<full yaml>"}'
+```
+
+Back up the current compose before overwriting. Commit the change to the NAS Migration repo.
+
+### App control
+
+```bash
+midclt call app.query '[["name","=","sensorpush"]]'   # state, config
+midclt call app.redeploy sensorpush
+midclt call app.stop sensorpush
+midclt call app.start sensorpush
+```
+
+### Logs
+
+```bash
+ssh truenas
+sudo docker logs sensorpush-google-home
+sudo docker logs -f sensorpush-google-home     # follow
+sudo docker logs cloudflare-ddns
+```
 
 ---
 
 ## Server Endpoints
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/health` | GET | Health check |
-| `/sensors` | GET | Debug: list all sensors with readings |
-| `/auth` | GET | OAuth authorization (redirects to Google) |
-| `/token` | POST | OAuth token exchange |
-| `/fulfillment` | POST | Google Smart Home fulfillment |
+| Endpoint | Method | Description | Internet exposure (target) |
+|----------|--------|-------------|----------------------------|
+| `/ping` | GET | Liveness (always 200) — used by the container healthcheck | Behind Cloudflare Access |
+| `/health` | GET | Deep check: SensorPush API, token validity, cache age | Behind Cloudflare Access |
+| `/sensors` | GET | Debug: list all sensors with readings | Behind Cloudflare Access |
+| `/auth` | GET | OAuth authorization | Public (Google) |
+| `/token` | POST | OAuth token exchange | Public (Google) |
+| `/fulfillment` | POST | Google Smart Home fulfillment | Public (Google) |
+
+All endpoints remain reachable on the LAN / from the box (`http://127.0.0.1:3000/...`). The HomeOps
+`sensorpush-watch` job depends on `http://127.0.0.1:3000/sensors` on tank.
 
 ---
 
 ## Your Sensors
 
-| Sensor Name | Type | Location |
-|-------------|------|----------|
-| Office | HT1 | Office |
-| Living Room | HT1 | Living Room |
-| Main BR | HT1 | Bedroom |
-| Media Room | HT1 | Media Room |
-| Garage | HT1 | Garage |
-| Guitar Room | HT1 | Guitar Room |
-| Guitar Closet | HT1 | Guitar Closet |
-| Brondel | HT1 | Bathroom |
-| Outdoor Version | HTP.xw | Outside |
-| OM1 A SB HC S | HT1 | Guitar case |
-| SCGC OM42 | HT1 | Guitar case |
-| CJ-45-AT | HT1 | Guitar case |
-| Soloist | HT1 | Guitar case |
-| Eichelbaum OM | HT1 | Guitar case |
-| Eichelbaum Nick Lucas | HT1 | Guitar case |
-| Fairbanks F20 | HT.w | Guitar case |
+16 sensors. Names below are the **live** names from the SensorPush API (verified 2026-08-13) — these
+are what get sent to Google in SYNC, so renaming a sensor in the SensorPush app changes its Google
+Home name. The device ID is the SensorPush sensor ID and is **stable across renames**, so renaming
+will not orphan or duplicate devices in Google Home (just resync afterward).
+
+### Rooms
+
+| Sensor Name | Type | Location | Sensor ID |
+|-------------|------|----------|-----------|
+| Office | HT1 | Office | `417183.18944998561627694007` |
+| Living Room | HT1 | Living Room | `417191.2828295351410649294` |
+| Master  Bedroom | HT1 | Bedroom | `195970.266391386057082916` |
+| Media Room | HT1 | Media Room | `313298.2691765103993624206` |
+| Garage | HT1 | Garage | `301247.1259071782793615305` |
+| Guitar Room | HT1 | Guitar Room | `407570.137191662834444552` |
+| Guitar Closet | HT1 | Guitar Closet | `212794.2912047864102128500` |
+| Brondel | HT1 | Bathroom | `371472.3072755440936574589` |
+| Outdoor Version | HTP.xw | Outside | `16781526.6959716773245122267` |
+
+> Note: the bedroom sensor is named `Master  Bedroom` with a **double space**. Earlier revisions of
+> this doc called it "Main BR" — that was wrong.
+
+### Guitar cases
+
+| Sensor Name | Type | Sensor ID |
+|-------------|------|-----------|
+| OM1 A SB HC S | HT1 | `191817.31348507782594307173` |
+| SCGC OM42 | HT1 | `409747.183942185926913368` |
+| CJ-45-AT | HT1 | `425724.33764379803618728482` |
+| Soloist | HT1 | `425749.21359927402727249719` |
+| Eichelbaum OM | HT1 | `425762.41016360264242800862` |
+| Eichelbaum Nick Lucas | HT1 | `425560.19987395602824180402` |
+| Fairbanks F20 | HT.w | `16854443.23750445091811748787` |
+
+**Known-stale sensors as of 2026-08-13** (suspect battery):
+- **Fairbanks F20** — last reported **2026-05-10**, over three months silent.
+- **Eichelbaum Nick Lucas** — last reported **2026-08-09**.
 
 ---
 
-## Maintenance Commands
+## Relocation bring-up (new home / new network)
 
-### SSH to NAS
+**Context:** relocating McLean VA → Oakland CA, August 2026. New network infrastructure, again
+built on a **Firewalla Purple**.
 
-```bash
-ssh msalit@dewberrynas.lan
-```
+### What survives the move automatically
+- **Google path.** Since 2026-09-29 the Cloudflare Tunnel is outbound-only, so a new WAN IP, router
+  or subnet needs no DNS update and no port-forward — `cloudflared` just reconnects.
+- **Google account linking.** Tied to the domain, not the IP. Should survive.
+- **Sensor identity.** Device IDs are SensorPush sensor IDs; they don't change.
 
-### Set Docker Path (run after SSH)
+### What must be redone by hand
+1. **tankNAS DHCP reservation** on the new router (LAN-side tooling and `~/.ssh/config` depend on it).
+   *(Historic: before the tunnel, the Firewalla TCP 80 → tankNAS:3000 port-forward was the item most
+   likely to be forgotten. It is no longer needed.)*
+2. **SensorPush gateways back online.** Both units have RJ-45 — **prefer wired**. Wired needs no
+   provisioning (DHCP) and skips the BLE WiFi-credential dance entirely. Without a gateway online,
+   sensors buffer locally and the cloud goes stale, so `/health` can report `status: ok` while
+   `/sensors` returns hours-old readings.
+3. **Sensor placement + renames.** New house, new rooms. Rename in the SensorPush app, then
+   "Hey Google, sync my devices" to pull the new names through.
+4. **Update this doc** with the new WAN IP, tankNAS LAN IP, and the room list.
 
-```bash
-export PATH=/share/CACHEDEV1_DATA/.qpkg/container-station/bin:$PATH
-```
-
-### View Running Containers
-
-```bash
-docker ps
-```
-
-### View Logs
-
-```bash
-# Main server logs
-docker logs sensorpush-google-home
-
-# Follow logs in real-time
-docker logs -f sensorpush-google-home
-
-# DDNS container logs
-docker logs cloudflare-ddns
-```
-
-### Restart Containers
+### Verification sequence
 
 ```bash
-# Restart main server
-docker restart sensorpush-google-home
-
-# Restart DDNS
-docker restart cloudflare-ddns
-
-# Restart both via compose
-cd /share/mountPoint/Container/sensorpush-google-home
-docker compose -f docker-compose-qnap.yml restart
+dig +short sensorpush.dogpose.com                    # should resolve (Cloudflare IPs)
+ssh truenas 'curl -s http://127.0.0.1:3000/health'   # expect 16 sensors, tokenValid: true
+ssh truenas 'curl -s http://127.0.0.1:3000/sensors'  # check `observed` timestamps are FRESH
 ```
+(From outside, `/health` and `/sensors` are behind Cloudflare Access once Phase 0 is done.)
+Then a voice test: *"Hey Google, what's the temperature in the Office?"*
 
-### Rebuild and Restart (after code changes)
-
-```bash
-cd /share/mountPoint/Container/sensorpush-google-home
-docker compose -f docker-compose-qnap.yml up -d --force-recreate
-```
-
-### Stop Everything
-
-```bash
-cd /share/mountPoint/Container/sensorpush-google-home
-docker compose -f docker-compose-qnap.yml down
-```
-
----
-
-## Testing
-
-### Health Check
-
-```bash
-curl https://sensorpush.dogpose.com/health
-```
-
-### List All Sensors
-
-```bash
-curl https://sensorpush.dogpose.com/sensors
-```
-
-### Force Google Sync
-
-Say: "Hey Google, sync my devices"
+`/health` passing is **not** sufficient — it proves the service can reach the SensorPush cloud, not
+that the gateways are relaying. Always check `observed` timestamps in `/sensors`.
 
 ---
 
 ## Troubleshooting
 
-### Voice Commands Not Working
+### Voice commands not working
 
-1. Check server is running:
+1. Check the service: `ssh truenas 'curl -s http://127.0.0.1:3000/health'`
+2. Check the tunnel: `ssh truenas 'sudo docker logs --tail 50 cloudflared'` and the tunnel's status
+   in the Cloudflare dashboard (Zero Trust → Networks → Tunnels → "tank").
+3. Check logs:
    ```bash
-   curl https://sensorpush.dogpose.com/health
+   ssh truenas
+   sudo docker logs sensorpush-google-home | tail -50
    ```
+4. Resync devices: "Hey Google, sync my devices"
+5. Relink in the Google Home app if needed.
 
-2. Check logs for errors:
-   ```bash
-   ssh msalit@dewberrynas.lan
-   export PATH=/share/CACHEDEV1_DATA/.qpkg/container-station/bin:$PATH
-   docker logs sensorpush-google-home | tail -50
-   ```
+### Readings are stale but /health is OK
 
-3. Resync devices: "Hey Google, sync my devices"
+The service can talk to the SensorPush cloud, but a **gateway** isn't relaying. Check gateway power
+and network, and confirm both gateways show online in the SensorPush app.
 
-4. Relink in Google Home app if needed
+### IP address changed
 
-### IP Address Changed
+No action needed for the Google path — the tunnel is outbound-only. (`cloudflare-ddns-vpn` still
+tracks the WAN IP for `vpn.dogpose.com`; if it isn't updating, check `CF_API_TOKEN` in
+`/mnt/tank/appdata/sensorpush/.env`.)
 
-The DDNS container should handle this automatically. Check its logs:
+### Tunnel down / cloudflared crash-looping
 
-```bash
-docker logs cloudflare-ddns
-```
-
-If needed, manually update in Cloudflare DNS dashboard.
-
-### Container Won't Start
-
-Check Docker logs:
+Usually `TUNNEL_TOKEN` was not interpolated. Re-run the compose with the env file:
 
 ```bash
-docker logs sensorpush-google-home
+cd ~/compose && sudo docker compose --env-file /mnt/tank/appdata/sensorpush/.env -f cloudflared.yml up -d
 ```
 
-Common issues:
-- Port 3000 already in use
-- SensorPush credentials changed
-- Network issues reaching SensorPush API
-
-### SensorPush Authentication Failed
-
-If SensorPush password changes, update it in the host's `.env` file (alongside `docker-compose-qnap.yml`) and restart the container:
+### Container won't start
 
 ```bash
-docker compose -f docker-compose-qnap.yml up -d --force-recreate sensorpush-google-home
+midclt call app.query '[["name","=","sensorpush"]]'
+ssh truenas 'sudo docker logs sensorpush-google-home'
 ```
+
+Common issues: port 3000 in use, SensorPush credentials changed, image missing (rebuild it —
+`pull_policy: never` means a missing image will not be fetched).
+
+### SensorPush authentication failed
+
+Update the password in `/mnt/tank/appdata/sensorpush/.env`, then:
+
+```bash
+midclt call app.redeploy sensorpush
+```
+
+**The SensorPush password is also stored in Homebridge** (`/mnt/tank/appdata/homebridge/config.json`,
+SensorPush platform). Change it in both places, or Apple Home goes stale while Google keeps working.
 
 ---
 
@@ -307,69 +392,96 @@ docker compose -f docker-compose-qnap.yml up -d --force-recreate sensorpush-goog
 ### Local (Mac)
 
 ```
-/Users/msalit/SensorPushIntegration/        # also: github.com/msalit/SensorPushIntegration
-├── src/
-│   ├── index.js          # Main server code
-│   └── sensorpush.js     # SensorPush API client
-├── docs/                 # design docs (e.g. apple-home-integration-plan.md)
-├── docker-compose.yml         # Generic compose (env interpolation)
-├── docker-compose-qnap.yml    # QNAP-specific compose
-├── Dockerfile
-├── package.json
-├── .env                  # gitignored, real secrets
-├── .env.example          # template
+/Users/msalit/SensorPushIntegration/        # github.com/msalit/SensorPushIntegration
+├── src/                  # Node service — source of truth for the CODE
+├── docs/                 # design docs (apple-home-integration-plan.md — superseded)
+├── docker-compose.yml         # local dev
+├── docker-compose-qnap.yml    # LEGACY, retired deployment
+├── .env / .env.example
 ├── README.md
-└── MAINTENANCE.md        # This file
+└── MAINTENANCE.md        # this file
+
+/Users/msalit/AI_Projects/NAS Migration/
+└── compose/sensorpush.yml     # source of truth for the DEPLOYMENT
 ```
 
-### NAS (DewberryNAS)
+### tankNAS
 
 ```
-/share/mountPoint/Container/sensorpush-google-home/
+/mnt/tank/appdata/sensorpush/   # .env (incl. TUNNEL_TOKEN) + build context
+/mnt/tank/appdata/homebridge/   # Homebridge config.json (contains SensorPush credentials), auth.json
+~/compose/cloudflared.yml       # tunnel compose (plain docker compose, not a TrueNAS app)
 ```
-
-Accessible via SMB at: `/Volumes/mountPoint/Container/sensorpush-google-home/`
 
 ---
 
-## Updating the Code
+## Apple Home (Homebridge)
 
-The repo is the source of truth. Edit, commit, push, then pull on the NAS.
+Apple Home gets the sensors from **Homebridge**, not from this service. Verified on the box 2026-10-26:
 
-1. Edit files locally in `~/SensorPushIntegration/`, run tests if any, commit:
-   ```bash
-   cd ~/SensorPushIntegration
-   git add -A && git commit -m "..." && git push
-   ```
+| Item | Value |
+|------|-------|
+| Container | `homebridge` (plain container on tank, network `homebridge_default`) |
+| Version | Homebridge 2.4.0 |
+| Plugin | `homebridge-sensorpush` ^1.0.3 (only plugin installed) |
+| Data source | SensorPush cloud **directly**, with its own copy of the SensorPush email/password in `config.json` |
+| Poll interval | `pollingInterval: 300000` in config (presumably ms = 5 min — unit not confirmed against plugin docs) |
+| HAP port | 51737 (HomeKit pairing/traffic, LAN only) |
+| Config UI | `http://192.168.186.156:8581` — form login (account created 2026-09-29), no TLS |
+| Internet exposure | None — not on the Cloudflare Tunnel; remote access goes via the HomePods / Apple TV home hub |
 
-2. On the NAS, pull and rebuild:
-   ```bash
-   ssh msalit@dewberrynas.lan
-   export PATH=/share/CACHEDEV1_DATA/.qpkg/container-station/bin:$PATH
-   cd /share/mountPoint/Container/sensorpush-google-home   # post-rename: /share/dewberryMount/Container/sensorpush-google-home
-   git pull
-   docker compose -f docker-compose-qnap.yml up -d --build
-   ```
+Consequences:
+- The Google security work (Cloudflare Access, OAuth hardening, re-linking Google) does **not** affect
+  Apple Home. After any change here, still confirm the sensors show in the Home app.
+- **Two SensorPush API clients** poll the same account (this service, on demand with a 60s cache; and
+  Homebridge, on its interval). Watch both containers' logs for HTTP 429s.
+- The Homebridge UI can install plugins (= run code on tank) — treat its login as a high-value
+  credential and restrict who on the LAN can reach :8581 during the segmentation work.
+- LAN segmentation must keep mDNS between Homebridge and the HomePods / Apple TV working.
 
-3. Verify: `curl https://sensorpush.dogpose.com/health`
-
-4. If Google Smart Home device traits changed, resync: "Hey Google, sync my devices"
-
-> Note: as of 2026-05-02 the NAS copy is not yet a git clone of the repo — it's still the standalone copy that predates the repo. Converting it to a git checkout is a separate, pending step (along with migrating the live `docker-compose-qnap.yml` to env-interpolation).
-
----
-
-## Security Notes
-
-- OAuth tokens are stored in-memory (lost on restart, but Google re-authenticates automatically)
-- All credentials live in the host's `.env` file (never in this repo); `.env` is in `.gitignore`
-- Cloudflare API token has limited scope (DNS edit for dogpose.com only)
-- No ports exposed directly to internet (Cloudflare proxy handles SSL)
-- Firewalla IDS/IPS monitors incoming traffic
+`docs/apple-home-integration-plan.md` (a native `hap-nodejs` bridge inside this service) is
+**superseded** by this Homebridge setup and should not be implemented as written.
 
 ---
 
-## Created
+## Related work
 
-- **Date:** January 31, 2026
-- **Author:** Built with Claude Code
+- **Apple Home / HomeKit** — delivered by Homebridge (above). The in-repo plan is superseded.
+- **NAS Migration program** — `~/AI_Projects/NAS Migration/HANDOFF.md` is the authority on tankNAS.
+- **Security review 2026-10-26** — `~/AI_Projects/2026 October Security Review/`.
+
+---
+
+## Security status (2026-10-26)
+
+**Open findings** (measured from the public internet 2026-10-26; remediation in progress):
+
+| # | Issue | Fix | Status |
+|---|-------|-----|--------|
+| 1 | `/sensors`, `/health`, `/ping` readable by anyone (sensor names, temps, occupancy pattern) | Cloudflare Access on those paths | Phase 0 — pending |
+| 2 | `/auth` auto-approves any caller; no `client_id` / `redirect_uri` check (also an open redirect) | Validate client + Google redirect allowlist; owner-password login | Phase 1 — pending |
+| 3 | `/token` doesn't check `client_id` / `client_secret` or bind codes to `redirect_uri`; codes/tokens never expire | Validate; bind; expire | Phase 1 — pending |
+| 4 | `/fulfillment` never checks the bearer token | Reject unknown/expired tokens with 401 | Phase 1 — pending |
+| 5 | OAuth client secret printed to the container log at startup (`index.js`); silently randomized if env unset | Remove log line; fail fast on missing env; consider rotating the secret | Phase 1 — pending |
+| 6 | Tokens held in memory — a restart invalidates Google's tokens (Google does **not** silently recover; re-link may be needed) | Persist to `/mnt/tank/appdata/sensorpush/` via a volume | Phase 1 — pending |
+| 7 | `cloudflared` image is `:latest` (unpinned) | Pin a version | Phase 3 |
+
+**Still true:**
+- Credentials live in `/mnt/tank/appdata/sensorpush/.env` (mode 600), never in a repo — **except**
+  the SensorPush password is also in Homebridge's `config.json` (see Apple Home section).
+- No inbound ports on the WAN — the tunnel is outbound-only.
+- Cloudflare API token (DDNS) is scoped to DNS edit for dogpose.com.
+
+---
+
+## History
+
+- **2026-01-31** — Built (with Claude Code), deployed on QNAP DewberryNAS.
+- **2026-07-03** — Migrated to tankNAS as TrueNAS custom app `sensorpush`; Firewalla repointed to
+  192.168.1.170:3000; DewberryNAS containers stopped.
+- **2026-08-13** — Docs corrected to match the tankNAS deployment; relocation section added.
+- **2026-09-29** — Google path moved to a Cloudflare Tunnel (`cloudflared`); WAN port-forward and
+  `cloudflare-ddns` for this hostname retired. Homebridge (with `homebridge-sensorpush`) set up on tank
+  for Apple Home.
+- **2026-10-26** — External security review: OAuth endpoints and debug paths found open to the
+  internet (see "Security status"). Docs updated for tunnel, Homebridge, and new LAN IP.

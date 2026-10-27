@@ -1,6 +1,23 @@
 # Apple Home / HomeKit Integration — Plan
 
-**Status:** Approved (2026-05-02). Implementation deferred until **after** the QNAP firmware updates and the `mountPoint → dewberryMount/eatonMount` share-rename project.
+**Status: SUPERSEDED (2026-10-26) — do not implement.** Apple Home already receives the SensorPush sensors through **Homebridge** on tankNAS (`homebridge` container, `homebridge-sensorpush` plugin, set up ~2026-09-29). See `MAINTENANCE.md` → "Apple Home (Homebridge)". The `network_mode: host` change below would also break the Cloudflare Tunnel path (`cloudflared` reaches this service by container name on `ix-sensorpush_default`). Kept for history only.
+
+The concern that motivated a native bridge — two SensorPush API clients on one account — is now real (this service + Homebridge); monitor for HTTP 429s rather than re-architecting unless they appear.
+
+---
+
+*Original status:* Approved in principle (2026-05-02) — **but this plan is now STALE. Revise before implementing.**
+
+Two of its premises are gone. It was written against the QNAP DewberryNAS deployment and sequenced behind the `mountPoint → dewberryMount/eatonMount` share-rename; the service **moved to tankNAS (TrueNAS SCALE) on 2026-07-03**, which makes both moot. The household is also relocating McLean VA → Oakland CA in August 2026.
+
+**Restart after the Oakland network is stood up.** What needs rewriting:
+
+- **§4 Container/network changes** and **"What changes in the repo"** target `docker-compose-qnap.yml`. The live definition is now a **TrueNAS custom app** whose compose lives at `~/AI_Projects/NAS Migration/compose/sensorpush.yml` and is applied via `midclt call app.update sensorpush '{"custom_compose_config_string": ...}'`.
+- **HAP persistence** should live at `/mnt/tank/appdata/sensorpush/homekit/` (alongside `.env` and `build/`), not a repo-relative `./homekit/`.
+- **`network_mode: host`** still needs validating, but now against TrueNAS's Docker rather than QNAP Container Station — and against the *new* Firewalla Purple in Oakland.
+- **mDNS/Bonjour** must be verified on the new Oakland LAN, and a Home hub (HomePod / Apple TV) must be on the same network for remote access.
+
+Everything else — combined single service, 120s poll, `hap-nodejs`, per-sensor accessories, battery mapping — still stands.
 
 ## Decisions
 
