@@ -13,6 +13,11 @@ services:
       - SENSORPUSH_PASSWORD=${SENSORPUSH_PASSWORD}
       - OAUTH_CLIENT_ID=${OAUTH_CLIENT_ID:-sensorpush-google-home}
       - OAUTH_CLIENT_SECRET=${OAUTH_CLIENT_SECRET}
+      - OAUTH_OWNER_PASSWORD=${OAUTH_OWNER_PASSWORD}
+      - OAUTH_PROJECT_ID=${OAUTH_PROJECT_ID}
+      - TOKEN_STORE_PATH=/data/tokens.json
+    volumes:
+      - ./data:/data
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/health"]
       interval: 30s
