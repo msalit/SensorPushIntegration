@@ -76,7 +76,7 @@ kept current by `cloudflare-ddns`) is retired.
 |---------|-------|
 | Public hostname | Cloudflare Tunnel "tank" → `http://sensorpush-google-home:3000` (DNS record is a tunnel CNAME, managed by Cloudflare) |
 | Tunnel token | `TUNNEL_TOKEN` in `/mnt/tank/appdata/sensorpush/.env`; value in private Bear note |
-| Cloudflare Access | **Planned (Phase 0, 2026-10-26):** Access app on `/sensors`, `/health`, `/ping` only. `/auth`, `/token`, `/fulfillment` must stay public for Google. |
+| Cloudflare Access | **Live 2026-10-26:** whole hostname behind Access (One-time PIN, owner email); a second app **Bypasses** `/auth`, `/token`, `/fulfillment` for Google. Don't change without re-testing Google linking and the HomeOps heartbeat (`GET /token` → 404). |
 | SSL Mode / Proxy | Legacy settings from the port-forward era (Flexible, proxied); not used by the tunnel path |
 | Account Email | _see private Bear note_ |
 | Zone ID | _see private Bear note_ |
@@ -168,8 +168,11 @@ confusing "Permission denied (publickey)".)
 | Container | Image | Purpose |
 |-----------|-------|---------|
 | `sensorpush-google-home` | `sensorpush-google-home:local` (built on-box) | Main server, port 3000 |
-| `cloudflare-ddns` | `favonia/cloudflare-ddns` | **Redundant** since the tunnel owns the DNS record. Exited as of 2026-10-26, but still defined in `sensorpush.yml` with `restart: unless-stopped` — an `app.redeploy` may start it again. Remove it from the compose once Cloudflare Access is verified. |
-| `cloudflare-ddns-vpn` | `favonia/cloudflare-ddns` | Keeps `vpn.dogpose.com` → WAN IP (DNS-only, WireGuard). **Keep.** |
+| `cloudflare-ddns-vpn` | `favonia/cloudflare-ddns:1.17.0` | Keeps `vpn.dogpose.com` → WAN IP (DNS-only, WireGuard). **Keep.** |
+
+`cloudflare-ddns` (for `sensorpush.dogpose.com`) was **removed from the app on 2026-10-26**. The tunnel
+owns that record as a CNAME; if the container ever reappears, it logs Cloudflare error 81054 trying to
+create an A record. Stop it.
 
 Not part of the `sensorpush` app, but on the request path:
 
@@ -205,14 +208,31 @@ compose would create a second, unmanaged project next to the TrueNAS app.
 
 ### Changing the container definition (ports, env, volumes)
 
-Edit `~/AI_Projects/NAS Migration/compose/sensorpush.yml`, then apply it as the custom app's
-compose string:
+The app's live compose holds the **secret values inline**. `/mnt/tank/appdata/sensorpush/.env` is
+*not* read by the app; it's the record of the values (and `cloudflared`'s source for
+`TUNNEL_TOKEN`). `~/AI_Projects/NAS Migration/compose/sensorpush.yml` is a placeholder mirror.
 
-```bash
-midclt call app.update sensorpush '{"custom_compose_config_string": "<full yaml>"}'
-```
+1. Back up: `midclt call app.config sensorpush > <backup dir>/app-config.json` (mode 600; contains secrets).
+2. On the box, load that dict, change it (pull secret values from `.env`, never type them into a
+   command line you'll print), and submit it with
+   `app.update sensorpush {"custom_compose_config_string": <json>}` as a job. The 2026-10-26 change
+   used a small Python script with `truenas_api_client.Client`.
+3. Update the mirror in the NAS Migration repo and commit.
 
-Back up the current compose before overwriting. Commit the change to the NAS Migration repo.
+Never `docker compose -f sensorpush.yml up`. It would create a second, unmanaged project. Runbook:
+`~/AI_Projects/HomeOps/runbooks/tank-tunnel-and-sensorpush.md`.
+
+### Environment (in the app config; values also in `.env`)
+
+| Variable | Purpose |
+|---|---|
+| `SENSORPUSH_EMAIL`, `SENSORPUSH_PASSWORD` | SensorPush cloud login |
+| `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET` | Must match the Google Home Developer Console account-linking settings |
+| `OAUTH_OWNER_PASSWORD` | Password entered on the `/auth` page when linking in the Google Home app. Copy in Mac Keychain item `sensorpush-oauth-owner`. |
+| `OAUTH_PROJECT_ID` | `sensorpush-home-72375`; builds the `redirect_uri` allowlist |
+| `TOKEN_STORE_PATH` | `/data/tokens.json`. `/data` is `/mnt/tank/appdata/sensorpush/data` on the host. |
+
+The service refuses to start if any of the first six is missing.
 
 ### App control
 
@@ -454,17 +474,19 @@ Consequences:
 
 ## Security status (2026-10-26)
 
-**Open findings** (measured from the public internet 2026-10-26; remediation in progress):
+Findings measured from the public internet on 2026-10-26, and their status:
 
 | # | Issue | Fix | Status |
 |---|-------|-----|--------|
-| 1 | `/sensors`, `/health`, `/ping` readable by anyone (sensor names, temps, occupancy pattern) | Cloudflare Access on those paths | Phase 0 — pending |
-| 2 | `/auth` auto-approves any caller; no `client_id` / `redirect_uri` check (also an open redirect) | Validate client + Google redirect allowlist; owner-password login | Phase 1 — pending |
-| 3 | `/token` doesn't check `client_id` / `client_secret` or bind codes to `redirect_uri`; codes/tokens never expire | Validate; bind; expire | Phase 1 — pending |
-| 4 | `/fulfillment` never checks the bearer token | Reject unknown/expired tokens with 401 | Phase 1 — pending |
-| 5 | OAuth client secret printed to the container log at startup (`index.js`); silently randomized if env unset | Remove log line; fail fast on missing env; consider rotating the secret | Phase 1 — pending |
-| 6 | Tokens held in memory — a restart invalidates Google's tokens (Google does **not** silently recover; re-link may be needed) | Persist to `/mnt/tank/appdata/sensorpush/` via a volume | Phase 1 — pending |
-| 7 | `cloudflared` image is `:latest` (unpinned) | Pin a version | Phase 3 |
+| 1 | `/sensors`, `/health`, `/ping` readable by anyone (sensor names, temps, occupancy pattern). Express also served `/Sensors`, `/sensors/`. | Cloudflare Access on the whole host; Bypass only for Google's 3 paths | **Fixed 2026-10-26** (all variants → 302 to Access) |
+| 2 | `/auth` auto-approved any caller; no `client_id` / `redirect_uri` check (also an open redirect) | Validate client + response_type + Google redirect allowlist; owner-password login, throttled | **Fixed 2026-10-26** |
+| 3 | `/token` didn't check `client_id` / `client_secret` or bind codes to `redirect_uri`; codes/tokens never expired | Client auth (body or Basic); single-use 10-min codes bound to redirect_uri; 1-h access tokens | **Fixed 2026-10-26** |
+| 4 | `/fulfillment` never checked the bearer token | 401 unless an unexpired issued access token; DISCONNECT revokes all | **Fixed 2026-10-26** |
+| 5 | OAuth client secret printed to the log at startup; auth codes and (via actions-on-google `debug: true`) bearer tokens logged too; secret silently randomized if env unset | Removed; fail fast on missing env | **Fixed 2026-10-26.** Old log lines remain in the pre-fix container's history; consider rotating `OAUTH_CLIENT_SECRET` (requires updating the Google console). |
+| 6 | Tokens held in memory: a restart invalidated Google's tokens (seen 2026-10-03: refresh failed after restart, re-link needed) | Persist SHA-256 hashes to `/mnt/tank/appdata/sensorpush/data/tokens.json` | **Fixed 2026-10-26** |
+| 7 | `cloudflared` image is `:latest` (unpinned) | Pin a version | Open (low) |
+
+Tests: `npm test` (node:test, starts the server with dummy credentials; covers the above).
 
 **Still true:**
 - Credentials live in `/mnt/tank/appdata/sensorpush/.env` (mode 600), never in a repo — **except**
@@ -484,4 +506,7 @@ Consequences:
   `cloudflare-ddns` for this hostname retired. Homebridge (with `homebridge-sensorpush`) set up on tank
   for Apple Home.
 - **2026-10-26** — External security review: OAuth endpoints and debug paths found open to the
-  internet (see "Security status"). Docs updated for tunnel, Homebridge, and new LAN IP.
+  internet (see "Security status"). Docs updated for tunnel, Homebridge, and new LAN IP. Same day:
+  Cloudflare Access added; OAuth hardened and tokens persisted (new env + `/data` volume via
+  `app.update`); `cloudflare-ddns` removed from the app. Rollback image `sensorpush-google-home:pre-20261026`;
+  backups in `/mnt/tank/appdata/sensorpush/backup-20261026/`. Google Home re-link required once.

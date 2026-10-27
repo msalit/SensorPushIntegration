@@ -11,7 +11,7 @@ It implements the Google Smart Home OAuth flow, SYNC/QUERY/EXECUTE/DISCONNECT, a
 
 **Apple Home is not served by this repo.** The sensors reach Apple Home through **Homebridge** on tankNAS (`homebridge` container, plugin `homebridge-sensorpush`), which polls the SensorPush cloud independently with its own copy of the SensorPush credentials. See `MAINTENANCE.md` → "Apple Home (Homebridge)".
 
-> ⚠️ **Open security findings (2026-10-26).** The OAuth endpoints and `/sensors` are reachable from the internet without effective auth. Remediation is in progress — see `MAINTENANCE.md` → "Security status".
+> **Security (2026-10-26).** The whole hostname is behind Cloudflare Access except Google's `/auth`, `/token`, `/fulfillment`. Those require the owner password, client credentials and bearer tokens respectively. See `MAINTENANCE.md` → "Security status". Run `npm test` before deploying OAuth changes.
 
 ---
 
