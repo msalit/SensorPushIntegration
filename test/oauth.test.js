@@ -87,6 +87,10 @@ test('GET /auth with valid params shows the login page, no code', async () => {
   const html = await res.text();
   assert.match(html, /type="password"/);
   assert.match(html, /st&amp;ate=1/, 'state is HTML-escaped');
+  // form-action also governs the post-login redirect; without Google's origin the browser blocks it
+  const csp = res.headers.get('content-security-policy');
+  assert.match(csp, /form-action [^;]*https:\/\/oauth-redirect\.googleusercontent\.com/);
+  assert.match(csp, /form-action [^;]*https:\/\/oauth-redirect-sandbox\.googleusercontent\.com/);
 });
 
 test('GET /auth rejects unknown client_id, foreign redirect_uri, wrong response_type', async () => {

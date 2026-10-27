@@ -88,9 +88,13 @@ function validateAuthRequest({ client_id, redirect_uri, response_type }) {
   return null;
 }
 
+// Browsers apply form-action to the redirect after the POST too, so Google's
+// redirect origins must be allowed or the code never reaches Google
+const FORM_ACTION_SOURCES = ["'self'", ...ALLOWED_REDIRECT_URIS.map((uri) => new URL(uri).origin)].join(' ');
+
 function renderLoginPage(res, params, { status = 200, error = null } = {}) {
   res.status(status)
-    .set('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'")
+    .set('Content-Security-Policy', `default-src 'none'; style-src 'unsafe-inline'; form-action ${FORM_ACTION_SOURCES}; frame-ancestors 'none'`)
     .set('X-Frame-Options', 'DENY')
     .set('Cache-Control', 'no-store')
     .type('html')
